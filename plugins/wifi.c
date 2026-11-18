@@ -1568,8 +1568,11 @@ static void interface_create_callback(int result,
 	/*
 	 * Set the BSS expiration age to match the long scanning
 	 * interval to avoid the loss of unconnected networks between
-	 * two scans.
+	 * two scans.  Only relevant when background scanning is active.
 	 */
+	if (!connman_setting_get_bool("BackgroundScanning"))
+		return;
+
 	bgscan_range_max = strrchr(BGSCAN_DEFAULT, ':');
 	if (!bgscan_range_max || strlen(bgscan_range_max) < 1)
 		return;
