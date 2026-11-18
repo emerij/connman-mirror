@@ -1391,21 +1391,6 @@ static gboolean autoscan_timeout(gpointer data)
 
 	throw_wifi_scan(wifi->device, scan_callback_hidden);
 
-	/*
-	 * In case BackgroundScanning is disabled, interval will reach the
-	 * limit exactly after the very first passive scanning. It allows
-	 * to ensure at most one passive scan is performed in such cases.
-	 */
-	if (!connman_setting_get_bool("BackgroundScanning") &&
-					interval == autoscan->limit) {
-		g_source_remove(autoscan->timeout);
-		autoscan->timeout = 0;
-
-		connman_device_unref(device);
-
-		return FALSE;
-	}
-
 set_interval:
 	DBG("interval %d", interval);
 
@@ -1489,37 +1474,7 @@ static struct autoscan_params *parse_autoscan_params(const char *params)
 
 static void setup_autoscan(struct wifi_data *wifi)
 {
-	/*
-	 * If BackgroundScanning is enabled, setup exponential
-	 * autoscanning if it has not been previously done.
-	 */
-	if (connman_setting_get_bool("BackgroundScanning")) {
-		wifi->autoscan = parse_autoscan_params(AUTOSCAN_EXPONENTIAL);
-		return;
-	}
-
-	/*
-	 * On the contrary, if BackgroundScanning is disabled, update autoscan
-	 * parameters based on the type of scanning that is being performed.
-	 */
-	if (wifi->autoscan) {
-		g_free(wifi->autoscan);
-		wifi->autoscan = NULL;
-	}
-
-	switch (wifi->scanning_type) {
-	case WIFI_SCANNING_PASSIVE:
-		/* Do not setup autoscan. */
-		break;
-	case WIFI_SCANNING_ACTIVE:
-		/* Setup one single passive scan after active. */
-		wifi->autoscan = parse_autoscan_params(AUTOSCAN_SINGLE);
-		break;
-	case WIFI_SCANNING_UNKNOWN:
-		/* Setup autoscan in this case but we should never fall here. */
-		wifi->autoscan = parse_autoscan_params(AUTOSCAN_SINGLE);
-		break;
-	}
+	wifi->autoscan = parse_autoscan_params(AUTOSCAN_EXPONENTIAL);
 }
 
 static void finalize_interface_creation(struct wifi_data *wifi)
@@ -1568,11 +1523,8 @@ static void interface_create_callback(int result,
 	/*
 	 * Set the BSS expiration age to match the long scanning
 	 * interval to avoid the loss of unconnected networks between
-	 * two scans.  Only relevant when background scanning is active.
+	 * two scans.
 	 */
-	if (!connman_setting_get_bool("BackgroundScanning"))
-		return;
-
 	bgscan_range_max = strrchr(BGSCAN_DEFAULT, ':');
 	if (!bgscan_range_max || strlen(bgscan_range_max) < 1)
 		return;
