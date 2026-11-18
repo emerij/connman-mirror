@@ -2235,8 +2235,16 @@ static void ssid_init(GSupplicantSSID *ssid, struct connman_network *network)
 	ssid->pin_wps =
 		g_strdup(connman_network_get_string(network, "WiFi.PinWPS"));
 
-	if (connman_setting_get_bool("BackgroundScanning"))
-		ssid->bgscan = g_strdup(BGSCAN_DEFAULT);
+	{
+		struct connman_service *service =
+			connman_service_lookup_from_network(network);
+		bool bgscan = service ?
+			connman_service_get_background_scanning(service) :
+			connman_setting_get_bool("BackgroundScanning");
+
+		if (bgscan)
+			ssid->bgscan = g_strdup(BGSCAN_DEFAULT);
+	}
 }
 
 static int network_connect(struct connman_network *network)
