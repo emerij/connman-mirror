@@ -79,6 +79,18 @@
 #define ASSOC_STATUS_NO_CLIENT 17
 #define LOAD_SHAPING_MAX_RETRIES 3
 
+/*
+ * Bounded retry budget for disconnects during connection establishment
+ * that do not match any of the specific, already-understood failure
+ * reasons (wrong key, SAE failure, AP load shaping, explicit block).
+ * These are generic/transient failures: a deauth during association,
+ * an auth timeout, a one-off RF glitch.  Without a retry budget here,
+ * a single such event sends the service straight to a permanent
+ * CONNMAN_SERVICE_STATE_FAILURE that nothing but a manual Connect()
+ * or ClearProperty("Error") will recover from.
+ */
+#define TRANSIENT_MAX_RETRIES 4
+
 static struct connman_technology *wifi_technology = NULL;
 static struct connman_technology *p2p_technology = NULL;
 
@@ -147,6 +159,8 @@ struct wifi_data {
 	unsigned int watch;
 	int retries;
 	int load_shaping_retries;
+	int transient_retries;
+	unsigned int transient_retry_timeout;
 	struct hidden_params *hidden;
 	bool postpone_hidden;
 	struct wifi_tethering_info *tethering_param;
@@ -925,6 +939,9 @@ static void wifi_remove(struct connman_device *device)
 
 	if (wifi->p2p_connection_timeout)
 		g_source_remove(wifi->p2p_connection_timeout);
+
+	if (wifi->transient_retry_timeout)
+		g_source_remove(wifi->transient_retry_timeout);
 
 	remove_networks(device, wifi);
 	remove_peers(wifi);
@@ -2486,6 +2503,72 @@ static bool handle_wps_completion(GSupplicantInterface *interface,
 	return true;
 }
 
+/*
+ * Delay (in seconds) before retry attempt N (0-indexed) of a transient
+ * connection failure.  Growing but capped, so a genuinely unreachable
+ * AP does not get hammered, and jittered so that a fleet of devices
+ * disconnected by the same event (e.g. an AP reboot) does not all
+ * retry in lockstep and look like a reconnect storm to the AP.
+ */
+static unsigned int transient_retry_delay(int attempt)
+{
+	static const unsigned int base_delay[] = { 2, 5, 12, 25 };
+	unsigned int delay;
+	unsigned int jitter;
+
+	if (attempt < 0)
+		attempt = 0;
+	if ((guint)attempt >= G_N_ELEMENTS(base_delay))
+		attempt = G_N_ELEMENTS(base_delay) - 1;
+
+	delay = base_delay[attempt];
+
+	jitter = delay / 5;
+	if (jitter > 0)
+		delay += (g_random_int() % (2 * jitter + 1)) - jitter;
+
+	return delay;
+}
+
+static gboolean transient_retry_timeout(gpointer user_data)
+{
+	struct connman_network *network = user_data;
+	struct connman_device *device = connman_network_get_device(network);
+	struct wifi_data *wifi = device ? connman_device_get_data(device) : NULL;
+
+	if (wifi) {
+		wifi->transient_retry_timeout = 0;
+
+		/*
+		 * Only retry if nothing else has taken over this
+		 * device's connection attempt in the meantime (e.g.
+		 * the user switched to a different network, or the
+		 * device was disabled).
+		 */
+		if (wifi->network == network) {
+			wifi->network = NULL;
+			network_connect(network);
+		}
+	}
+
+	connman_network_unref(network);
+
+	return FALSE;
+}
+
+static void schedule_transient_retry(struct wifi_data *wifi,
+					struct connman_network *network)
+{
+	unsigned int delay = transient_retry_delay(wifi->transient_retries - 1);
+
+	DBG("scheduling reconnect attempt %d/%d in %u s",
+		wifi->transient_retries, TRANSIENT_MAX_RETRIES, delay);
+
+	connman_network_ref(network);
+	wifi->transient_retry_timeout = g_timeout_add_seconds(delay,
+					transient_retry_timeout, network);
+}
+
 static bool handle_assoc_status_code(GSupplicantInterface *interface,
                                      struct wifi_data *wifi)
 {
@@ -2624,6 +2707,7 @@ static void interface_state(GSupplicantInterface *interface)
 		wifi->disconnect_code = 0;
 		wifi->assoc_code = 0;
 		wifi->load_shaping_retries = 0;
+		wifi->transient_retries = 0;
 		break;
 
 	case G_SUPPLICANT_STATE_DISCONNECTED:
@@ -2671,8 +2755,19 @@ static void interface_state(GSupplicantInterface *interface)
 		}
 
 		if (network != wifi->pending_network) {
-			connman_network_set_connected(network, false);
-			connman_network_set_associating(network, false);
+			bool was_connecting =
+				connman_network_get_connecting(network) ||
+				connman_network_get_associating(network);
+
+			if (was_connecting && wifi->disconnect_code != 6 &&
+					wifi->transient_retries <
+							TRANSIENT_MAX_RETRIES) {
+				wifi->transient_retries++;
+				schedule_transient_retry(wifi, network);
+			} else {
+				connman_network_set_connected(network, false);
+				connman_network_set_associating(network, false);
+			}
 		}
 		wifi->disconnecting = false;
 
