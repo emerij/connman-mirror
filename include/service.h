@@ -142,7 +142,6 @@ bool connman_service_get_favorite(const struct connman_service *service);
 bool connman_service_get_autoconnect(const struct connman_service *service);
 bool connman_service_set_autoconnect(struct connman_service *service,
 							bool autoconnect);
-bool connman_service_get_background_scanning(const struct connman_service *service);
 
 /* Return non-zero value to terminate the loop, zero to continue */
 typedef int (* connman_service_iterate_cb) (struct connman_service *service,

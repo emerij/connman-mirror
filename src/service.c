@@ -156,7 +156,6 @@ struct connman_service {
 	bool hidden;
 	bool ignore;
 	bool autoconnect;
-	bool background_scanning;
 	struct timeval modified;
 	unsigned int order;
 	char *name;
@@ -546,16 +545,6 @@ int __connman_service_load_modifiable(struct connman_service *service)
 		break;
 	}
 
-	if (service->type == CONNMAN_SERVICE_TYPE_WIFI) {
-		bool bgscan;
-
-		bgscan = g_key_file_get_boolean(keyfile,
-				service->identifier, "BackgroundScanning", &error);
-		if (!error)
-			service->background_scanning = bgscan;
-		g_clear_error(&error);
-	}
-
 	str = g_key_file_get_string(keyfile,
 				service->identifier, "Modified", NULL);
 	if (str) {
@@ -752,16 +741,6 @@ static int service_load(struct connman_service *service)
 		break;
 	}
 
-	if (service->type == CONNMAN_SERVICE_TYPE_WIFI) {
-		bool bgscan;
-
-		bgscan = g_key_file_get_boolean(keyfile,
-				service->identifier, "BackgroundScanning", &error);
-		if (!error)
-			service->background_scanning = bgscan;
-		g_clear_error(&error);
-	}
-
 	str = g_key_file_get_string(keyfile,
 				service->identifier, "Modified", NULL);
 	if (str) {
@@ -916,9 +895,6 @@ static int service_save(struct connman_service *service)
 			g_key_file_set_integer(keyfile, service->identifier,
 						"Frequency", freq);
 		}
-		g_key_file_set_boolean(keyfile, service->identifier,
-				"BackgroundScanning", service->background_scanning);
-
 		/* fall through */
 
 	case CONNMAN_SERVICE_TYPE_GADGET:
@@ -4510,22 +4486,6 @@ static void autoconnect_changed(struct connman_service *service)
 				DBUS_TYPE_BOOLEAN, &autoconnect);
 }
 
-static void background_scanning_changed(struct connman_service *service)
-{
-	dbus_bool_t val;
-
-	if (!service->path)
-		return;
-
-	if (!allow_property_changed(service))
-		return;
-
-	val = service->background_scanning;
-	connman_dbus_property_changed_basic(service->path,
-				CONNMAN_SERVICE_INTERFACE, "BackgroundScanning",
-				DBUS_TYPE_BOOLEAN, &val);
-}
-
 bool connman_service_set_autoconnect(struct connman_service *service,
 							bool autoconnect)
 {
@@ -5360,12 +5320,6 @@ static void append_properties(DBusMessageIter *dict, dbus_bool_t limited,
 
 	connman_dbus_dict_append_basic(dict, "AutoConnect",
 				DBUS_TYPE_BOOLEAN, &val);
-
-	if (service->type == CONNMAN_SERVICE_TYPE_WIFI) {
-		val = service->background_scanning;
-		connman_dbus_dict_append_basic(dict, "BackgroundScanning",
-					DBUS_TYPE_BOOLEAN, &val);
-	}
 
 	if (service->name)
 		connman_dbus_dict_append_basic(dict, "Name",
@@ -6485,22 +6439,6 @@ static DBusMessage *set_property(DBusConnection *conn,
 			if (autoconnect)
 				do_auto_connect(service,
 					CONNMAN_SERVICE_CONNECT_REASON_AUTO);
-		}
-	} else if (g_str_equal(name, "BackgroundScanning")) {
-		dbus_bool_t bgscan;
-
-		if (type != DBUS_TYPE_BOOLEAN)
-			return __connman_error_invalid_arguments(msg);
-
-		if (service->type != CONNMAN_SERVICE_TYPE_WIFI)
-			return __connman_error_not_supported(msg);
-
-		dbus_message_iter_get_basic(&value, &bgscan);
-
-		if (service->background_scanning != (bool)bgscan) {
-			service->background_scanning = bgscan;
-			background_scanning_changed(service);
-			service_save(service);
 		}
 	} else if (g_str_equal(name, "Nameservers.Configuration")) {
 		DBusMessageIter entry;
@@ -8246,8 +8184,6 @@ struct connman_service *connman_service_create(void)
 
 	DBG("service %p", service);
 
-	service->background_scanning = connman_setting_get_bool("BackgroundScanning");
-
 	service->counter_table = g_hash_table_new_full(g_str_hash,
 						g_str_equal, NULL, g_free);
 
@@ -8918,11 +8854,6 @@ bool connman_service_get_favorite(const struct connman_service *service)
 bool connman_service_get_autoconnect(const struct connman_service *service)
 {
 	return service->autoconnect;
-}
-
-bool connman_service_get_background_scanning(const struct connman_service *service)
-{
-	return service->background_scanning;
 }
 
 int __connman_service_set_immutable(struct connman_service *service,
